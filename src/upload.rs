@@ -7,9 +7,8 @@ use bytesize::ByteSize;
 use configparser::ini::Ini;
 use fs_err as fs;
 use fs_err::File;
+use multipart::client::lazy::Multipart;
 use regex::Regex;
-use reqwest::Url;
-use reqwest::{self, blocking::multipart::Form, blocking::Client, StatusCode};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::io;
@@ -47,9 +46,9 @@ pub struct PublishOpt {
 #[derive(Error, Debug)]
 #[error("Uploading to the registry failed")]
 pub enum UploadError {
-    /// Any reqwest error
-    #[error("Http error")]
-    RewqestError(#[source] reqwest::Error),
+    ///// Any reqwest error
+    //#[error("Http error")]
+    //RewqestError(#[source] reqwest::Error),
     /// The registry returned a "403 Forbidden"
     #[error("Username or password are incorrect")]
     AuthenticationError,
@@ -73,11 +72,11 @@ impl From<io::Error> for UploadError {
     }
 }
 
-impl From<reqwest::Error> for UploadError {
+/*impl From<reqwest::Error> for UploadError {
     fn from(error: reqwest::Error) -> Self {
         UploadError::RewqestError(error)
     }
-}
+}*/
 
 /// Returns the password and a bool that states whether to ask for re-entering the password
 /// after a failed authentication
@@ -187,7 +186,7 @@ fn complete_registry(opt: &PublishOpt) -> Result<Registry> {
             (None, opt.registry.clone())
         };
     let (username, password) = resolve_pypi_cred(opt, &pypirc, register_name);
-    let registry = Registry::new(username, password, Url::parse(&registry_url)?);
+    let registry = Registry::new(username, password, registry_url);
 
     Ok(registry)
 }
@@ -267,12 +266,41 @@ pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError>
     add_vec("requires_external", &metadata.requires_external);
     add_vec("project_urls", &metadata.project_urls);
 
-    let mut form = Form::new();
+    let wheel = File::open(&wheel_path)?;
+
+    let mut form = Multipart::new();
     for (key, value) in api_metadata {
-        form = form.text(key, value);
+        form.add_text(key, value);
     }
 
-    form = form.file("content", &wheel_path)?;
+    //.context(format!("Failed to read wheel at {}", wheel_path.display()))?;
+    //Some(Mime::from_str("application/zip")),
+    form.add_stream("content", &wheel, Some("blob"), None);
+    let multipart_data = form
+        .prepare()
+        .context("Failed to prepare data for upload")
+        .unwrap();
+
+    let encoded = base64::encode(&format!("{}:{}", registry.username, registry.password));
+    let response = ureq::post(registry.url.as_str())
+        .set(
+            "Content-Type",
+            &format!(
+                "multipart/form-data; boundary={}",
+                multipart_data.boundary()
+            ),
+        )
+        .set(
+            "User-Agent",
+            &format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        )
+        .set("Authorization", &format!("Basic {}", encoded))
+        .send(multipart_data)
+        .context("Failed to send upload request")
+        .unwrap();
+
+    /*let mut form = Form::new();
+    form = form.file("content", wheel_path)?;
 
     let client = Client::new();
     let response = client
@@ -283,13 +311,13 @@ pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError>
         )
         .multipart(form)
         .basic_auth(registry.username.clone(), Some(registry.password.clone()))
-        .send()?;
+        .send()?;*/
 
     let status = response.status();
-    if status.is_success() {
+    if status >= 200 && status < 300 {
         return Ok(());
     }
-    let err_text = response.text().unwrap_or_else(|e| {
+    let err_text = response.into_string().unwrap_or_else(|e| {
         format!(
             "The registry should return some text, even in case of an error, but didn't ({})",
             e
@@ -297,7 +325,7 @@ pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError>
     });
     // Detect FileExistsError the way twine does
     // https://github.com/pypa/twine/blob/87846e5777b380d4704704a69e1f9a7a1231451c/twine/commands/upload.py#L30
-    if status == StatusCode::FORBIDDEN {
+    if status == 403 {
         if err_text.contains("overwrite artifact") {
             // Artifactory (https://jfrog.com/artifactory/)
             Err(UploadError::FileExistsError(err_text))
@@ -306,13 +334,13 @@ pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError>
         }
     } else {
         let status_string = status.to_string();
-        if status == StatusCode::CONFLICT // pypiserver (https://pypi.org/project/pypiserver)
+        if status == 409 // conflict, pypiserver (https://pypi.org/project/pypiserver)
             // PyPI / TestPyPI
-            || (status == StatusCode::BAD_REQUEST && err_text.contains("already exists"))
+            || (status == 400 && err_text.contains("already exists"))
             // Nexus Repository OSS (https://www.sonatype.com/nexus-repository-oss)
-            || (status == StatusCode::BAD_REQUEST && err_text.contains("updating asset"))
+            || (status == 400 && err_text.contains("updating asset"))
             // # Gitlab Enterprise Edition (https://about.gitlab.com)
-            || (status == StatusCode::BAD_REQUEST && err_text.contains("already been taken"))
+            || (status == 400 && err_text.contains("already been taken"))
         {
             Err(UploadError::FileExistsError(err_text))
         } else {
