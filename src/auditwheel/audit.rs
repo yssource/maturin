@@ -408,6 +408,8 @@ pub fn get_sysroot_path(target: &Target) -> Result<PathBuf> {
     Ok(PathBuf::from("/"))
 }
 
+/// For the given compilation result, return the manylinux platform and the external libs
+/// we need to add to repair it
 pub fn get_policy_and_libs(
     artifact: &Path,
     platform_tag: Option<PlatformTag>,
