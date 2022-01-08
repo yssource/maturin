@@ -1,7 +1,7 @@
 //! The uploading logic was mostly reverse engineered; I wrote it down as
 //! documentation at https://warehouse.readthedocs.io/api-reference/legacy/#upload-api
 
-use crate::Registry;
+use crate::build_context::hash_file;
 use anyhow::{bail, Context, Result};
 use bytesize::ByteSize;
 use configparser::ini::Ini;
@@ -9,7 +9,6 @@ use fs_err as fs;
 use fs_err::File;
 use multipart::client::lazy::Multipart;
 use regex::Regex;
-use sha2::{Digest, Sha256};
 use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -46,9 +45,9 @@ pub struct PublishOpt {
 #[derive(Error, Debug)]
 #[error("Uploading to the registry failed")]
 pub enum UploadError {
-    ///// Any reqwest error
-    //#[error("Http error")]
-    //RewqestError(#[source] reqwest::Error),
+    /// Any ureq error
+    #[error("Http error")]
+    UreqError(#[source] ureq::Error),
     /// The registry returned a "403 Forbidden"
     #[error("Username or password are incorrect")]
     AuthenticationError,
@@ -72,11 +71,34 @@ impl From<io::Error> for UploadError {
     }
 }
 
-/*impl From<reqwest::Error> for UploadError {
-    fn from(error: reqwest::Error) -> Self {
-        UploadError::RewqestError(error)
+impl From<ureq::Error> for UploadError {
+    fn from(error: ureq::Error) -> Self {
+        UploadError::UreqError(error)
     }
-}*/
+}
+
+/// A pip registry such as pypi or testpypi with associated credentials, used
+/// for uploading wheels
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Registry {
+    /// The username
+    pub username: String,
+    /// The password
+    pub password: String,
+    /// The url endpoint for legacy uploading
+    pub url: String,
+}
+
+impl Registry {
+    /// Creates a new registry
+    pub fn new(username: String, password: String, url: String) -> Registry {
+        Registry {
+            username,
+            password,
+            url,
+        }
+    }
+}
 
 /// Returns the password and a bool that states whether to ask for re-entering the password
 /// after a failed authentication
@@ -202,10 +224,7 @@ fn canonicalize_name(name: &str) -> String {
 
 /// Uploads a single wheel to the registry
 pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError> {
-    let mut wheel = File::open(&wheel_path)?;
-    let mut hasher = Sha256::new();
-    io::copy(&mut wheel, &mut hasher)?;
-    let hash_hex = format!("{:x}", hasher.finalize());
+    let hash_hex = hash_file(&wheel_path)?;
 
     let dist = python_pkginfo::Distribution::new(wheel_path)
         .map_err(|err| UploadError::PkgInfoError(wheel_path.to_owned(), err))?;
@@ -273,13 +292,8 @@ pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError>
         form.add_text(key, value);
     }
 
-    //.context(format!("Failed to read wheel at {}", wheel_path.display()))?;
-    //Some(Mime::from_str("application/zip")),
     form.add_stream("content", &wheel, Some("blob"), None);
-    let multipart_data = form
-        .prepare()
-        .context("Failed to prepare data for upload")
-        .unwrap();
+    let multipart_data = form.prepare().map_err(|e| e.error)?;
 
     let encoded = base64::encode(&format!("{}:{}", registry.username, registry.password));
     let response = ureq::post(registry.url.as_str())
@@ -295,26 +309,10 @@ pub fn upload(registry: &Registry, wheel_path: &Path) -> Result<(), UploadError>
             &format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         )
         .set("Authorization", &format!("Basic {}", encoded))
-        .send(multipart_data)
-        .context("Failed to send upload request")
-        .unwrap();
-
-    /*let mut form = Form::new();
-    form = form.file("content", wheel_path)?;
-
-    let client = Client::new();
-    let response = client
-        .post(registry.url.clone())
-        .header(
-            reqwest::header::USER_AGENT,
-            format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
-        )
-        .multipart(form)
-        .basic_auth(registry.username.clone(), Some(registry.password.clone()))
-        .send()?;*/
+        .send(multipart_data)?;
 
     let status = response.status();
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         return Ok(());
     }
     let err_text = response.into_string().unwrap_or_else(|e| {

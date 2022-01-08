@@ -32,7 +32,6 @@ keyring = { version = "1.0.0", optional = true }
 platform-info = "0.2.0"
 pretty_env_logger = { version = "0.4.0", optional = true }
 regex = "1.4.5"
-rpassword = { version = "5.0.1", optional = true }
 serde = { version = "1.0.131", features = ["derive"] }
 serde_json = "1.0.70"
 sha2 = "0.10.0"
@@ -42,34 +41,37 @@ tempfile = "3.2.0"
 toml = "0.5.8"
 zip = "0.5.5"
 thiserror = "1.0.24"
-dirs = { version = "4.0.0", optional = true }
-configparser = { version = "3.0.0", optional = true }
+dirs = "4.0.0"
 fs-err = "2.5.0"
-fat-macho = { version = "0.4.4", default-features = false }
 once_cell = "1.7.2"
 target-lexicon = "0.12.0"
 pyproject-toml = "0.3.0"
 python-pkginfo = "0.5.0"
 textwrap = "0.14.2"
 ignore = "0.4.18"
-dialoguer = "0.9.0"
-console = "0.15.0"
-minijinja = "0.10.0"
-lddtree = "0.2.5"
-cc = "1.0.72"
 clap = { version = "3.0.0", features = ["derive", "env", "wrap_help"] }
 clap_complete = "3.0.0"
 clap_complete_fig = "3.0.0"
 semver = "1.0.4"
+fat-macho = { version = "0.4.4", default-features = false }
+lddtree = "0.2.5"
+cc = "1.0.72"
+# generate
+dialoguer = "0.9.0"
+console = "0.15.0"
+minijinja = "0.10.0"
+# upload
+configparser = { version = "3.0.0", optional = true }
+multipart = { version = "0.18.0", features = ["client"], default-features = false, optional = true }
+rpassword = { version = "5.0.1", optional = true }
 ureq = { version = "2.3.1", optional = true }
-multipart = { version = "0.18.0", features = ["client"],default-features = false, optional = true }
 
 [dev-dependencies]
 indoc = "1.0.3"
 
 [features]
 default = ["log", "upload", "human-panic"]
-upload = ["rpassword", "configparser", "dirs", "ureq", "multipart"]
+upload = ["rpassword", "configparser", "ureq", "multipart"]
 password-storage = ["upload", "keyring"]
 log = ["pretty_env_logger"]
 # Internal feature to speed up the tests significantly
